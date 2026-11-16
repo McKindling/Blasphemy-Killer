@@ -122,3 +122,20 @@ def test_plain_lines_repeat_after_thirty_seconds(capsys):
         "  transcribing 1% (overall 11%)",
         "  transcribing 3% (overall 13%)",
     ]
+
+
+def test_plain_lines_never_repeat_the_same_text(capsys):
+    # From the owner's test run: the 30 s line and the next 10% step printed
+    # "transcribing 43% (file 40%, run 20%)" twice in a row.
+    clock = Clock()
+    status = StatusLine(enabled=True, tty=False, total_files=2, clock=clock)
+    status.start_file(0, "a.mp4")
+    clock.now = 31.0
+    status.update("transcribing", 0.43, 0.399)          # 30 s on: printed
+    status.update("transcribing", 0.43, 0.401)          # crosses 40%, same text
+    status.start_file(1, "b.mp4")                       # new file: may repeat
+    status.update("transcribing", 0.43, 0.401)
+    assert capsys.readouterr().err.splitlines() == [
+        "  transcribing 43% (file 40%, run 20%)",
+        "  transcribing 43% (file 40%, run 70%)",
+    ]

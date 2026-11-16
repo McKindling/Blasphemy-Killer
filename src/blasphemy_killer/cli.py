@@ -91,6 +91,7 @@ class StatusLine:
         self._name = name
         self._bucket = 0
         self._last_stage = None
+        self._last_text = ""
         self._last_draw = self._clock()
 
     def update(self, stage: str, fraction: float | None, overall: float | None) -> None:
@@ -110,12 +111,12 @@ class StatusLine:
             return
         bucket = int(level * 10 + 1e-9)
         text = self._plain_text(stage, fraction, overall)
-        due = now - self._last_draw >= self.PLAIN_INTERVAL and text != self._last_text
-        if bucket > self._bucket or due:
-            self._bucket = max(self._bucket, bucket)
+        due = now - self._last_draw >= self.PLAIN_INTERVAL
+        if (bucket > self._bucket or due) and text != self._last_text:
             self._last_draw = now
             self._last_text = text
             click.echo(text, err=True)
+        self._bucket = max(self._bucket, bucket)
 
     def _run_fraction(self, overall: float) -> float:
         return (self._index + overall) / self.total
