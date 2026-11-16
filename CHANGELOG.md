@@ -24,6 +24,26 @@ Hardening from a security scan of the repo and the published 2.5.1 image.
 - **Docker image:** `apt-get upgrade` in the runtime stage for Debian fixes
   newer than the base image, and a `HEALTHCHECK` that probes the web UI.
 
+### Added
+
+- **Progress for the whole clean, in the CLI too.** The CLI showed nothing
+  while it worked; it now keeps a status line on stderr (`[3/12] 20%
+  movie.mkv - transcribing 58%` on a terminal, a plain line per 10%
+  elsewhere). `--no-progress` turns it off, and `-v` prints each stage.
+- **The audio extraction and the render report progress.** Both run ffmpeg
+  with `-progress`, and the stages are weighed into one overall figure per
+  file. The web UI's bar follows it instead of jumping to 100% at matching and
+  sitting there through the render, and shows `loading model…` while the
+  whisper model loads.
+
+### Fixed
+
+- **Windows: the report is written.** `os.O_NOFOLLOW` does not exist on
+  Windows, so a clean that had already replaced the file crashed before its
+  `.bk.json` sidecar was written.
+- **Windows: media paths use forward slashes** in the web API, and an uploaded
+  `cookies.txt` keeps its line endings.
+
 ## 2.5.1
 
 Two fixes for failures seen on real files: a clean that worked but reported
