@@ -47,7 +47,7 @@ jobs:
       - run: |
           uv export --locked --no-emit-project --format requirements-txt --no-hashes -o "$RUNNER_TEMP/requirements.txt"
           uvx --from "pip-audit==$PIP_AUDIT_VERSION" pip-audit -r "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip -f json -o pip-audit.json || true
-          python3 scripts/security_summary.py pip-audit pip-audit.json >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/security_summary.py pip-audit pip-audit.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
         with: { name: pip-audit, path: pip-audit.json, if-no-files-found: ignore, retention-days: 7 }
@@ -63,7 +63,7 @@ jobs:
           pipx run --spec "semgrep==$SEMGREP_VERSION" semgrep scan \
             --config p/default --config p/python --config p/dockerfile --metrics=off --quiet \
             --exclude .github --json --output semgrep.json . || true
-          python3 scripts/security_summary.py semgrep semgrep.json >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/security_summary.py semgrep semgrep.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
         with: { name: semgrep, path: semgrep.json, if-no-files-found: ignore, retention-days: 7 }
@@ -79,7 +79,7 @@ jobs:
           docker run --rm -v "$PWD:/repo" -v "$PWD/out:/out" \
             ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             git /repo --redact --no-banner --exit-code 0 --report-format json --report-path /out/gitleaks.json
-          python3 scripts/security_summary.py gitleaks out/gitleaks.json >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/security_summary.py gitleaks out/gitleaks.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
         with: { name: gitleaks, path: out/gitleaks.json, if-no-files-found: ignore, retention-days: 7 }
@@ -93,7 +93,7 @@ jobs:
       - run: |
           pipx run --spec "checkov==$CHECKOV_VERSION" checkov -f Dockerfile --framework dockerfile \
             --quiet -o json > checkov.json || true
-          python3 scripts/security_summary.py checkov checkov.json >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/security_summary.py checkov checkov.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
         with: { name: checkov, path: checkov.json, if-no-files-found: ignore, retention-days: 7 }
@@ -114,7 +114,7 @@ jobs:
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/out:/out" \
             ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
             config --format json --output /out/trivy-config.json --exit-code 0 /src
-          python3 scripts/security_summary.py trivy out/trivy-image.json out/trivy-config.json >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/security_summary.py trivy out/trivy-image.json out/trivy-config.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
         with: { name: trivy, path: out/, if-no-files-found: ignore, retention-days: 7 }
@@ -128,7 +128,7 @@ jobs:
       # The token lets zizmor run its online audits (known-vulnerable or impostor actions).
       - run: |
           pipx run --spec "zizmor==$ZIZMOR_VERSION" zizmor --format json .github/workflows > zizmor.json || true
-          python3 scripts/security_summary.py zizmor zizmor.json >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/security_summary.py zizmor zizmor.json | tee -a "$GITHUB_STEP_SUMMARY"
         env:
           GH_TOKEN: ${{ github.token }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -157,7 +157,7 @@ jobs:
             ghcr.io/zaproxy/zaproxy:2.17.0@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af \
             zap-baseline.py -t http://127.0.0.1:8080 -m 2 -I -J zap.json || true
           docker rm -f bk-zap
-          python3 scripts/security_summary.py zap zap/zap.json >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/security_summary.py zap zap/zap.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
         with: { name: zap, path: zap/zap.json, if-no-files-found: ignore, retention-days: 7 }
