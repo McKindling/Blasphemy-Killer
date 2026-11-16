@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+Hardening from a security scan of the repo and the published 2.5.1 image.
+
+### Security
+
+- **Security headers on every response.** A Content-Security-Policy limited to
+  the server's own origin (the page needs no inline script or style, so none
+  is allowed), `frame-ancestors 'none'` plus `X-Frame-Options: DENY` against
+  clickjacking, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+  no-referrer`, a `Permissions-Policy` that switches off camera, microphone,
+  location, payment and USB, and same-origin cross-origin policies. The one
+  inline `style` attribute in the page moved into `style.css`. The 2.5.1
+  `Cache-Control: no-cache` on `/` and `/static/*` is unchanged.
+- **Cross-site writes are refused.** The web UI has no login, so a page open in
+  another tab could make the browser queue a clean or replace the cookies file.
+  POST, PUT and DELETE that the browser marks cross-site (`Sec-Fetch-Site`, or
+  an `Origin` that differs from `Host`) now get 403. curl and scripts send
+  neither header and work as before. Reads are untouched.
+- **Locked dependencies bumped** past known advisories: anyio, certifi,
+  filelock and setuptools. Nothing else moved.
+- **Docker image:** `apt-get upgrade` in the runtime stage for Debian fixes
+  newer than the base image, and a `HEALTHCHECK` that probes the web UI.
+
 ## 2.5.1
 
 Two fixes for failures seen on real files: a clean that worked but reported
