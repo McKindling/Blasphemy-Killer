@@ -7,6 +7,7 @@ the web UI turns them into SSE messages. Neither formatting concern lives here.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
@@ -91,11 +92,20 @@ class Result:
     duration: float = 0.0
 
 
+# POSIX only: Windows has no O_NOFOLLOW, and touching it there raised
+# AttributeError after a clean had already replaced the file.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
 def write_report(report_path: Path, report: dict) -> None:
     """Write the JSON sidecar, refusing to follow a pre-placed symlink."""
+    if not _O_NOFOLLOW and report_path.is_symlink():
+        # Without the flag, check first. There is a window between the check
+        # and the open, which O_NOFOLLOW closes where it exists.
+        raise OSError(errno.ELOOP, "refusing to write through a symlink", str(report_path))
     fd = os.open(
         report_path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW,
         0o644,
     )
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
