@@ -299,7 +299,9 @@ def main(inputs, recursive, config_path, model, language, dry_run, output,
         try:
             files.append(download(
                 url, output, cfg.cookies,
-                on_progress=lambda stage, fraction: fetching.update(stage, fraction, None),
+                # With --no-progress, yt-dlp keeps its own bar, as before.
+                on_progress=(lambda stage, fraction: fetching.update(stage, fraction, None))
+                if show else None,
             ))
         except DownloadError as exc:
             fetching.echo(f"  download failed: {_display(exc)}", err=True)
