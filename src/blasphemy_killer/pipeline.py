@@ -192,8 +192,9 @@ def process(path: Path, cfg: Config, *, dry_run: bool, force: bool, tmp_dir: Pat
             on_event: OnEvent | None = None, check_cancelled: CheckCancelled | None = None) -> Result:
     """Run the full pipeline on one file.
 
-    on_event receives progress events; check_cancelled is called periodically
-    during transcription and should raise Cancelled to abort. Both optional.
+    on_event receives progress events; check_cancelled is called at each
+    stage start, once per transcribed segment, and just before the original
+    is replaced, and should raise Cancelled to abort. Both optional.
     """
     emit: OnEvent = on_event or (lambda _event: None)
     check: CheckCancelled = check_cancelled or (lambda: None)

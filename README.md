@@ -110,7 +110,7 @@ for real takes an explicit confirmation. A URL you paste is the exception: it
 was a request for a cleaned file, so it is cleaned (see
 [Pasting a URL](#pasting-a-url)).
 Each running job shows a live progress bar for the whole clean, with the
-current stage alongside ("rendering 40% · 91% overall"). A running job can be
+current stage alongside ("rendering 40% · 88% overall"). A running job can be
 cancelled (it stops at the next transcription checkpoint, usually a second or
 two, or just before the original would be replaced).
 
@@ -228,23 +228,29 @@ mumbled dialogue), `--pad-ms` (mute padding around each phrase, default 300),
 
 ### Progress
 
-Progress goes to stderr, so stdout carries only the file names, matches and
-results, as before. On a terminal it is one line that updates in place:
+Progress goes to stderr. stdout carries the file names, matches and results,
+as before, plus yt-dlp's own lines while a URL downloads (its progress bar is
+off while the status line is on). On a terminal it is one line that updates
+in place:
 
 ```
-[3/12] 20% movie.mkv - transcribing 58%
+[3/12] 21% movie.mkv - transcribing 58%
 ```
 
-`[3/12]` and the run figure appear when more than one file is given: finished
-files plus this one's share, over the file count. Anywhere else (a pipe, cron,
-`docker logs`) it is a plain line each time the file passes another 10%:
+The leading figure is the whole run: with one file it is that file's overall
+progress; with several, `[3/12]` is added and the figure is finished files plus
+this one's share, over the file count. Anywhere else (a pipe, cron,
+`docker logs`) it is a plain line each time the file passes another 10% (and
+at most every 30 s otherwise, if anything changed):
 
 ```
-  transcribing 60% (overall 52%)
+  transcribing 60% (overall 52%)              # one file
+  transcribing 60% (file 52%, run 21%)        # several files
 ```
 
 The overall figure weighs the stages by their usual cost: transcription about
-70%, the render about 18%, the audio extraction about 9%. Loading the whisper
+70%, the render about 18%, the audio extraction about 9% (a dry run has no
+render, so there transcription is most of the bar). Loading the whisper
 model (a download, the first time) has no measurable length and shows as
 `loading model...`. With voice-activity detection on, transcription moves in
 media time, so it jumps over long silences. `--no-progress` turns it off.

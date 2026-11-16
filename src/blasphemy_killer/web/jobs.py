@@ -207,8 +207,10 @@ class JobQueue:
                 job.state = CANCELLED
             else:
                 # Already running. It only stops at the next checkpoint (a
-                # whisper segment boundary, which can be seconds away), so flag
-                # the request now rather than leaving the UI looking stuck.
+                # whisper segment boundary, the start of a stage, or just
+                # before the original is replaced -- after the render, which
+                # can take minutes), so flag the request now rather than
+                # leaving the UI looking stuck.
                 job.cancel_requested = True
         self._publish(job)
         return job

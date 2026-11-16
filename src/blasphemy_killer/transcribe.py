@@ -51,9 +51,9 @@ def transcribe(wav_path: Path, *, model: str, language: str | None,
     on_progress, if given, receives the fraction of the media transcribed so
     far. on_stage hears "transcribing" once the model is ready, preceded by
     "loading-model" when it is not loaded yet (the first use may download
-    it, with no measurable progress). check_cancelled is called once per segment and
-    may raise to abort; this is the only stage long enough to be worth
-    interrupting.
+    it, with no measurable progress). check_cancelled is called once per
+    segment and may raise to abort. The render has no checkpoints of its own;
+    process() checks once more before the replace.
     """
     if cpu_threads <= 0:
         cpu_threads = min(8, available_cpus())
