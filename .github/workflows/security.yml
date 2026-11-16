@@ -1,0 +1,163 @@
+# Security scan. Report only: findings never fail a build or block a release.
+# Each scanner writes JSON and a severity-count table to the job summary.
+#
+#   pip-audit  known vulnerabilities in the locked Python dependencies (uv.lock)
+#   semgrep    static analysis of the Python source, the Dockerfile and scripts
+#   gitleaks   secrets anywhere in git history
+#   checkov    the Dockerfile (docker-compose.yml is covered by semgrep and trivy config)
+#   trivy      the built image (OS packages and Python packages) and the Dockerfile/compose misconfigurations
+#   zizmor     these GitHub Actions workflows
+#   ZAP        passive baseline scan of the web UI, started from the built image (weekly/manual only)
+#
+# THIS REPOSITORY IS PUBLIC. Workflow logs and job summaries are public, and so are
+# artifacts to any signed-in GitHub user. So the summaries show counts only, and the
+# full JSON is uploaded as an artifact only when the repository variable
+# SECURITY_UPLOAD is "true" (kept for 7 days). Findings are never filed as issues.
+name: Security scan
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 12 * * 1' # Mondays
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_AUDIT_VERSION: 2.10.1
+  SEMGREP_VERSION: 1.184.0
+  CHECKOV_VERSION: 3.4.3
+  ZIZMOR_VERSION: 1.32.0
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with: { enable-cache: false }
+      # Audits exactly what uv.lock pins, dev group included. Exits 1 on findings.
+      - run: |
+          uv export --locked --no-emit-project --format requirements-txt --no-hashes -o "$RUNNER_TEMP/requirements.txt"
+          uvx --from "pip-audit==$PIP_AUDIT_VERSION" pip-audit -r "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip -f json -o pip-audit.json || true
+          python3 scripts/security_summary.py pip-audit pip-audit.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
+        with: { name: pip-audit, path: pip-audit.json, if-no-files-found: ignore, retention-days: 7 }
+
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      # Workflows are left to zizmor.
+      - run: |
+          pipx run --spec "semgrep==$SEMGREP_VERSION" semgrep scan \
+            --config p/default --config p/python --config p/dockerfile --metrics=off --quiet \
+            --exclude .github --json --output semgrep.json . || true
+          python3 scripts/security_summary.py semgrep semgrep.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
+        with: { name: semgrep, path: semgrep.json, if-no-files-found: ignore, retention-days: 7 }
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false, fetch-depth: 0 }
+      - run: |
+          mkdir -m 777 out
+          docker run --rm -v "$PWD:/repo" -v "$PWD/out:/out" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --redact --no-banner --exit-code 0 --report-format json --report-path /out/gitleaks.json
+          python3 scripts/security_summary.py gitleaks out/gitleaks.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
+        with: { name: gitleaks, path: out/gitleaks.json, if-no-files-found: ignore, retention-days: 7 }
+
+  checkov:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - run: |
+          pipx run --spec "checkov==$CHECKOV_VERSION" checkov -f Dockerfile --framework dockerfile \
+            --quiet -o json > checkov.json || true
+          python3 scripts/security_summary.py checkov checkov.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
+        with: { name: checkov, path: checkov.json, if-no-files-found: ignore, retention-days: 7 }
+
+  trivy:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - run: docker build -t blasphemy-killer:scan .
+      - run: |
+          mkdir -m 777 out
+          # Image: OS and Python packages. Config: Dockerfile and compose misconfigurations.
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/out:/out" \
+            ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
+            image --scanners vuln,secret --format json --output /out/trivy-image.json --exit-code 0 blasphemy-killer:scan
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/out:/out" \
+            ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb \
+            config --format json --output /out/trivy-config.json --exit-code 0 /src
+          python3 scripts/security_summary.py trivy out/trivy-image.json out/trivy-config.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
+        with: { name: trivy, path: out/, if-no-files-found: ignore, retention-days: 7 }
+
+  zizmor:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      # The token lets zizmor run its online audits (known-vulnerable or impostor actions).
+      - run: |
+          pipx run --spec "zizmor==$ZIZMOR_VERSION" zizmor --format json .github/workflows > zizmor.json || true
+          python3 scripts/security_summary.py zizmor zizmor.json >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
+        with: { name: zizmor, path: zizmor.json, if-no-files-found: ignore, retention-days: 7 }
+
+  dast:
+    # Passive only: spiders the UI for two minutes and inspects responses; sends no attacks.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - run: docker build -t blasphemy-killer:scan .
+      - run: |
+          mkdir -m 777 zap media
+          docker run -d --name bk-zap -p 127.0.0.1:8080:8080 \
+            -e PUID="$(id -u)" -e PGID="$(id -g)" \
+            -v "$PWD/media:/media" blasphemy-killer:scan serve
+          for _ in $(seq 1 30); do
+            curl -sf --max-time 2 http://127.0.0.1:8080/api/config > /dev/null && break
+            sleep 1
+          done
+          docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:2.17.0@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af \
+            zap-baseline.py -t http://127.0.0.1:8080 -m 2 -I -J zap.json || true
+          docker rm -f bk-zap
+          python3 scripts/security_summary.py zap zap/zap.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && vars.SECURITY_UPLOAD == 'true' }}
+        with: { name: zap, path: zap/zap.json, if-no-files-found: ignore, retention-days: 7 }
