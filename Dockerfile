@@ -25,6 +25,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM ${PYTHON_IMAGE} AS runtime
 
+# Pick up Debian security fixes published since the base image was built
+# (apt, zlib1g, ...). Only already-installed packages move; nothing is added.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 # ffprobe/ffmpeg drive the whole pipeline (probe, extract, render, verify).
 # Static builds rather than Debian's ffmpeg package: that package hard-depends
 # on libllvm + mesa-libgallium + flite (~220 MB of GPU and text-to-speech stack)
@@ -60,6 +66,11 @@ EXPOSE 8080
 # re-transcribes everything. /cache holds the whisper model (~460 MB).
 RUN mkdir -p /config /cache /media && chown 1000:1000 /config /cache
 VOLUME ["/config", "/cache"]
+
+# Meaningful for `serve`; a one-shot CLI container exits long before it matters.
+# Probes loopback inside the container, so it works whatever BK_WEB_HOST is.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import os,urllib.request as u; u.urlopen('http://127.0.0.1:%s/api/config' % os.environ.get('BK_WEB_PORT','8080'), timeout=4)"]
 
 WORKDIR /media
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
