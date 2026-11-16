@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from blasphemy_killer.config import load_config
 from blasphemy_killer.web import cookies as cookies_module
 from blasphemy_killer.web.app import create_app
 from blasphemy_killer.web.library import Library, PathDenied, resolve_within
+from conftest import symlink_or_skip
 
 
 @pytest.fixture
@@ -67,7 +69,7 @@ def test_resolve_within_rejects_escapes(media_root: Path, candidate: str):
 def test_resolve_within_rejects_symlink_out_of_root(media_root: Path, tmp_path: Path):
     outside = tmp_path / "outside.mp4"
     outside.write_bytes(b"should stay unreachable")
-    (media_root / "sneaky.mp4").symlink_to(outside)
+    symlink_or_skip(media_root / "sneaky.mp4", outside)
     with pytest.raises(PathDenied):
         resolve_within(media_root, "sneaky.mp4")
 
@@ -771,7 +773,8 @@ def test_uploaded_cookies_are_stored_private_to_the_user(client: TestClient,
     }
     stored = isolated_config_dir / "cookies.txt"
     assert stored.read_text() == NETSCAPE
-    assert stored.stat().st_mode & 0o777 == 0o600      # not group- or world-readable
+    if os.name != "nt":  # Windows has no POSIX mode bits to check
+        assert stored.stat().st_mode & 0o777 == 0o600  # not group- or world-readable
 
 
 def test_cookies_are_never_served_back(client: TestClient):

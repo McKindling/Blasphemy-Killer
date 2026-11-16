@@ -344,7 +344,7 @@ class JobQueue:
                 dest_dir=dest, on_progress=on_progress,
             ).resolve()
             try:
-                job.path = str(landed.relative_to(root))
+                job.path = landed.relative_to(root).as_posix()
             except ValueError:
                 raise ValueError(f"download landed outside the media root: {landed}") from None
             job.state = DONE
