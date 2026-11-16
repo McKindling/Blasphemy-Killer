@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.5.2 — security hardening
 
 Hardening from a security scan of the repo and the published 2.5.1 image.
 
