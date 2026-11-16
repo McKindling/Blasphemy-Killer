@@ -49,19 +49,18 @@ def transcribe(wav_path: Path, *, model: str, language: str | None,
     """Transcribe a mono 16 kHz WAV and return the word stream with timestamps.
 
     on_progress, if given, receives the fraction of the media transcribed so
-    far. on_stage hears "loading-model" before a model that is not loaded yet
-    (the first use may download it, with no measurable progress) and
-    "transcribing" once it is. check_cancelled is called once per segment and
+    far. on_stage hears "transcribing" once the model is ready, preceded by
+    "loading-model" when it is not loaded yet (the first use may download
+    it, with no measurable progress). check_cancelled is called once per segment and
     may raise to abort; this is the only stage long enough to be worth
     interrupting.
     """
     if cpu_threads <= 0:
         cpu_threads = min(8, available_cpus())
-    loading = on_stage is not None and (model, cpu_threads) not in _model_cache
-    if loading:
+    if on_stage is not None and (model, cpu_threads) not in _model_cache:
         on_stage("loading-model")
     whisper = _get_model(model, cpu_threads)
-    if loading:
+    if on_stage is not None:
         on_stage("transcribing")
 
     # faster-whisper returns a generator: segments are produced as the audio is

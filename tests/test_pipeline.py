@@ -38,6 +38,8 @@ def _fake_transcript(monkeypatch, words: list[Word], *, progress=(0.5, 1.0)):
     def fake(_wav, *, model, language, cpu_threads=0, beam_size=5,
              vad_filter=True, vad_threshold=0.35, on_progress=None, on_stage=None,
              check_cancelled=None):
+        if on_stage is not None:
+            on_stage("transcribing")
         for fraction in progress:
             if check_cancelled is not None:
                 check_cancelled()
@@ -318,8 +320,30 @@ def test_loading_the_model_is_announced_once(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(transcribe_mod, "_model_cache", {})
     monkeypatch.setattr(transcribe_mod, "_get_model", lambda name, threads: (
         transcribe_mod._model_cache.setdefault((name, threads), Model())))
-    for expected in (["loading-model", "transcribing"], []):
+    for expected in (["loading-model", "transcribing"], ["transcribing"]):
         stages: list[str] = []
         transcribe_mod.transcribe(tmp_path / "a.wav", model="tiny", language=None,
                                   cpu_threads=1, on_stage=stages.append)
         assert stages == expected
+
+
+def test_model_load_shows_transcribing_once(fixture_mp4: Path, tmp_path: Path, cfg,
+                                            monkeypatch):
+    # From the owner's test run: -v printed "stage: transcribing" before and
+    # after "stage: loading-model".
+    import blasphemy_killer.transcribe as transcribe_mod
+
+    def fake(_wav, *, on_stage=None, on_progress=None, **_kw):
+        on_stage("loading-model")
+        on_stage("transcribing")
+        on_progress(1.0)
+        return []
+
+    monkeypatch.setattr(transcribe_mod, "transcribe", fake)
+    target = tmp_path / "clip.mp4"
+    target.write_bytes(fixture_mp4.read_bytes())
+    events: list = []
+    process(target, cfg, dry_run=True, force=False, tmp_dir=tmp_path,
+            on_event=_record(events))
+    assert _stages(events) == ["probing", "extracting", "loading-model",
+                               "transcribing", "matching"]

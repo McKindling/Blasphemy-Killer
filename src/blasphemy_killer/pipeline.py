@@ -230,7 +230,9 @@ def process(path: Path, cfg: Config, *, dry_run: bool, force: bool, tmp_dir: Pat
     extract_wav(path, stream, wav, center_channel=cfg.center_channel,
                 duration=info.duration, on_progress=track.progress)
 
-    track.enter("transcribing")
+    # No track.enter("transcribing") here: transcribe() announces it itself,
+    # after "loading-model" when the model has to load first. Entering it here
+    # too showed "transcribing" twice around the model load.
     check()
     from .transcribe import transcribe  # deferred: heavy import, not needed for --help etc.
     words = transcribe(
