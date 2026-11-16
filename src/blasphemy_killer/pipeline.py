@@ -37,13 +37,23 @@ class Cancelled(Exception):
 @dataclass(frozen=True)
 class StageChanged:
     """Entered a new pipeline stage."""
-    stage: str  # probing|extracting|transcribing|matching|rendering|verifying|reporting
+    # probing|extracting|transcribing|loading-model|matching|rendering|verifying|reporting
+    # loading-model comes inside transcribing, when the whisper model is not
+    # loaded yet, and is followed by transcribing again.
+    stage: str
 
 
 @dataclass(frozen=True)
 class Progress:
-    """Fraction of the media transcribed so far, 0.0-1.0."""
+    """How far the run has got.
+
+    fraction is the current stage's own share done, 0.0-1.0. overall is the
+    whole file's, from STAGE_WEIGHTS: it never goes down and ends at 1.0. One
+    is emitted at every stage change too, at the stage's fraction 0.0.
+    """
     fraction: float
+    stage: str = "transcribing"
+    overall: float | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +89,58 @@ Event = (
 
 OnEvent = Callable[[Event], None]
 CheckCancelled = Callable[[], None]
+
+
+# Relative cost of each stage, for Progress.overall. Rough shares of a typical
+# run's wall time; tune them from the elapsed_seconds in .bk.json reports.
+# Loading (or downloading) the model has no measurable length, so it weighs
+# nothing and is shown as text rather than as a made-up percentage.
+STAGE_WEIGHTS: dict[str, float] = {
+    "probing": 1,
+    "extracting": 9,
+    "loading-model": 0,
+    "transcribing": 70,
+    "matching": 1,
+    "rendering": 18,
+    "verifying": 0.5,
+    "reporting": 0.5,
+}
+
+
+class _Tracker:
+    """Emits StageChanged and Progress, keeping the overall figure.
+
+    The planned stages are normalised to 1.0, so a dry run (no render) and a
+    run without a report still end at exactly 100%.
+    """
+
+    def __init__(self, emit: OnEvent, stages: list[str]):
+        self._emit = emit
+        total = sum(STAGE_WEIGHTS[s] for s in stages)
+        self._start: dict[str, float] = {}
+        self._share: dict[str, float] = {}
+        done = 0.0
+        for s in stages:
+            self._start[s] = done / total
+            self._share[s] = STAGE_WEIGHTS[s] / total
+            done += STAGE_WEIGHTS[s]
+        self.stage = stages[0]
+        self.overall = 0.0
+
+    def enter(self, stage: str) -> None:
+        self.stage = stage
+        self._emit(StageChanged(stage))
+        self.progress(0.0)
+
+    def progress(self, fraction: float) -> None:
+        fraction = min(1.0, max(0.0, fraction))
+        value = self._start.get(self.stage, self.overall) + self._share.get(self.stage, 0.0) * fraction
+        self.overall = max(self.overall, min(1.0, value))
+        self._emit(Progress(fraction, self.stage, self.overall))
+
+    def finish(self) -> None:
+        self.overall = 1.0
+        self._emit(Progress(1.0, self.stage, 1.0))
 
 
 @dataclass
@@ -136,8 +198,12 @@ def process(path: Path, cfg: Config, *, dry_run: bool, force: bool, tmp_dir: Pat
     emit: OnEvent = on_event or (lambda _event: None)
     check: CheckCancelled = check_cancelled or (lambda: None)
     started = time.monotonic()
+    stages = ["probing", "extracting", "loading-model", "transcribing", "matching"]
+    if not dry_run:
+        stages += ["rendering", "verifying"] + (["reporting"] if cfg.write_report else [])
+    track = _Tracker(emit, stages)
 
-    emit(StageChanged("probing"))
+    track.enter("probing")
     check()
     info = probe(path)
 
@@ -145,6 +211,7 @@ def process(path: Path, cfg: Config, *, dry_run: bool, force: bool, tmp_dir: Pat
         if marker_valid(info):
             result = Result(status="skipped", reason="already-processed", marker=info.marker)
             emit(Skipped("already-processed", info.marker))
+            track.finish()
             emit(Finished(result))
             return result
         emit(MarkerUnsigned())
@@ -153,27 +220,30 @@ def process(path: Path, cfg: Config, *, dry_run: bool, force: bool, tmp_dir: Pat
     if stream is None:
         result = Result(status="skipped", reason="no-audio")
         emit(Skipped("no-audio"))
+        track.finish()
         emit(Finished(result))
         return result
 
-    emit(StageChanged("extracting"))
+    track.enter("extracting")
     check()
     wav = tmp_dir / "audio.wav"
-    extract_wav(path, stream, wav, center_channel=cfg.center_channel)
+    extract_wav(path, stream, wav, center_channel=cfg.center_channel,
+                duration=info.duration, on_progress=track.progress)
 
-    emit(StageChanged("transcribing"))
+    track.enter("transcribing")
     check()
     from .transcribe import transcribe  # deferred: heavy import, not needed for --help etc.
     words = transcribe(
         wav, model=cfg.model, language=cfg.language or None,
         cpu_threads=cfg.cpu_threads, beam_size=cfg.beam_size,
         vad_filter=cfg.vad_filter, vad_threshold=cfg.vad_threshold,
-        on_progress=lambda f: emit(Progress(f)),
+        on_progress=track.progress,
+        on_stage=track.enter,
         check_cancelled=check_cancelled,
     )
     wav.unlink(missing_ok=True)
 
-    emit(StageChanged("matching"))
+    track.enter("matching")
     matches = find_matches(words, cfg.phrases)
     intervals = build_intervals(
         matches, pad_before=cfg.pad_before, pad_after=cfg.pad_after,
@@ -188,6 +258,7 @@ def process(path: Path, cfg: Config, *, dry_run: bool, force: bool, tmp_dir: Pat
             status="dry-run", matches=matches, intervals=intervals,
             elapsed=time.monotonic() - started, duration=info.duration,
         )
+        track.finish()
         emit(Finished(result))
         return result
 
@@ -201,13 +272,14 @@ def process(path: Path, cfg: Config, *, dry_run: bool, force: bool, tmp_dir: Pat
     out_tmp = Path(out_name)
     replaced = False
     try:
-        emit(StageChanged("rendering"))
+        track.enter("rendering")
         check()
         if intervals:
-            render(info, intervals, out_tmp, tmp_dir / "filter.txt")
+            render(info, intervals, out_tmp, tmp_dir / "filter.txt",
+                   on_progress=track.progress)
         else:
-            stamp_only(info, out_tmp)
-        emit(StageChanged("verifying"))
+            stamp_only(info, out_tmp, on_progress=track.progress)
+        track.enter("verifying")
         verify_output(info, out_tmp)
         # The last point a cancel can still be honoured. Rendering is the long
         # pass and has no checkpoints of its own, so a request made during it
@@ -225,7 +297,7 @@ def process(path: Path, cfg: Config, *, dry_run: bool, force: bool, tmp_dir: Pat
             out_tmp.unlink(missing_ok=True)
 
     if cfg.write_report:
-        emit(StageChanged("reporting"))
+        track.enter("reporting")
         write_report(
             path.with_name(path.name + ".bk.json"),
             _build_report(path, cfg, info, matches, intervals, time.monotonic() - started),
@@ -235,5 +307,6 @@ def process(path: Path, cfg: Config, *, dry_run: bool, force: bool, tmp_dir: Pat
         status="processed", matches=matches, intervals=intervals,
         elapsed=time.monotonic() - started, duration=info.duration,
     )
+    track.finish()
     emit(Finished(result))
     return result
