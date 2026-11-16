@@ -8,9 +8,10 @@ import mimetypes
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -22,6 +23,55 @@ from .jobs import JobQueue
 from .library import Library, PathDenied, resolve_within
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+# Everything the page loads comes from this origin: one script, one stylesheet,
+# fetch()/EventSource to /api, and <video>/<audio> on /api/media. No inline
+# script or style, so neither needs 'unsafe-inline'. frame-ancestors is what
+# stops clickjacking (X-Frame-Options is sent too for old browsers).
+CSP = "; ".join([
+    "default-src 'none'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "media-src 'self'",
+    "connect-src 'self'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+])
+
+SECURITY_HEADERS = {
+    "Content-Security-Policy": CSP,
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+}
+
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def cross_site(request: Request) -> bool:
+    """True when a browser says this request was triggered by another site.
+
+    The UI has no login, so any page the user visits could otherwise make their
+    browser POST to the server (queue a clean, replace the cookies file). A
+    browser always labels such a request: Sec-Fetch-Site says where it came
+    from, and Origin names the page. Requests carrying neither (curl, scripts)
+    are not browser-driven and pass.
+    """
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site not in ("same-origin", "none")
+    origin = request.headers.get("origin")
+    if origin is not None:
+        # "null" (sandboxed iframe, file://) has no netloc and never matches.
+        return urlsplit(origin).netloc != request.headers.get("host", "")
+    return False
 
 
 class Hub:
@@ -147,6 +197,22 @@ def create_app(root: Path, cfg: Config | None = None) -> FastAPI:
         response = await call_next(request)
         if request.url.path == "/" or request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    @app.middleware("http")
+    async def block_cross_site_writes(request: Request, call_next):
+        if request.method not in SAFE_METHODS and cross_site(request):
+            return JSONResponse(
+                {"detail": "cross-site request refused"}, status_code=403,
+                headers=SECURITY_HEADERS,
+            )
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
         return response
 
     @app.get("/api/config")

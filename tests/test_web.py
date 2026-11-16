@@ -994,3 +994,64 @@ def test_a_healthy_uploaded_file_is_still_the_one_downloads_use(client: TestClie
     created = client.post("/api/downloads", json={"url": "https://example.com/v", "dest": ""})
     _await_job(client, created.json()["job"]["id"])
     assert fake_download[0]["cookies"] == isolated_config_dir / "cookies.txt"
+
+
+# --- security headers and cross-site writes ----------------------------------
+
+def test_security_headers_on_page_assets_and_api(client: TestClient):
+    for path in ("/", "/static/app.js", "/api/config", "/api/nope"):
+        h = client.get(path).headers
+        assert h["x-frame-options"] == "DENY"
+        assert h["x-content-type-options"] == "nosniff"
+        assert h["referrer-policy"] == "no-referrer"
+        assert "camera=()" in h["permissions-policy"]
+        csp = h["content-security-policy"]
+        assert "frame-ancestors 'none'" in csp
+        assert "default-src 'none'" in csp
+        assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+
+
+def test_page_has_no_inline_script_or_style(client: TestClient):
+    """The CSP forbids both, so the page must not rely on either."""
+    import re
+    html = client.get("/").text
+    assert not re.search(r"<script(?![^>]*\bsrc=)", html)
+    assert "<style" not in html
+    assert not re.search(r"\sstyle=", html)
+    assert not re.search(r"\son\w+=", html)
+
+
+def test_cache_control_survives_the_headers_middleware(client: TestClient):
+    assert "no-cache" in client.get("/").headers["cache-control"]
+
+
+@pytest.mark.parametrize("headers", [
+    {"Sec-Fetch-Site": "cross-site"},
+    {"Sec-Fetch-Site": "same-site"},
+    {"Origin": "https://evil.example"},
+    {"Origin": "null"},
+])
+def test_cross_site_writes_are_refused(client: TestClient, media_root: Path, headers):
+    body = {"path": "movie.mp4"}
+    assert client.post("/api/jobs", json=body, headers=headers).status_code == 403
+    assert client.put("/api/cookies", content=b"x", headers=headers).status_code == 403
+    assert client.delete("/api/cookies", headers=headers).status_code == 403
+    assert client.post("/api/downloads", json={"url": "https://e.x/v"}, headers=headers).status_code == 403
+    assert client.delete("/api/jobs/abc", headers=headers).status_code == 403
+    assert client.get("/api/jobs").status_code == 200
+
+
+@pytest.mark.parametrize("headers", [
+    {},                                              # curl, scripts
+    {"Sec-Fetch-Site": "same-origin"},
+    {"Sec-Fetch-Site": "none"},
+    {"Origin": "http://testserver"},                 # matches the Host header
+])
+def test_same_origin_and_non_browser_writes_pass(client: TestClient, headers):
+    assert client.post("/api/jobs", json={"path": "movie.mp4"}, headers=headers).status_code == 200
+
+
+def test_cross_site_reads_are_not_blocked(client: TestClient):
+    """Reads are not state-changing; the browser's own same-origin policy keeps
+    another site from reading the response."""
+    assert client.get("/api/jobs", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 200
