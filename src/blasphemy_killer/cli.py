@@ -244,9 +244,9 @@ def process_file(path: Path, cfg: Config, *, dry_run: bool, force: bool,
 def main(inputs, recursive, config_path, model, language, dry_run, output,
          cookies, force, pad_ms, center_channel, vad, vad_threshold, threads, no_report, keep_backup, list_phrases,
          progress, verbose):
-    """Mute audio segments that take the Lord's name in vain in video files.
+    """Mute audio segments that take the Lord's name in vain in video and audio files.
 
-    PATH_OR_URL may be video files, directories, or http(s) URLs
+    PATH_OR_URL may be media files, directories, or http(s) URLs
     (downloaded with yt-dlp, then processed the same way).
     """
     cfg = load_config(config_path)

@@ -71,6 +71,10 @@ named volume and leave it alone.
   touches any media.
 - **On SELinux hosts** (Fedora, RHEL) append `:z` to the media mount:
   `-v "$PWD:/media:z"`.
+- **On Windows** (Docker Desktop, PowerShell) `$(id -u)` is bash syntax: drop
+  the `PUID`/`PGID` flags and write the mount as `-v "${PWD}:/media"`. The
+  `bk` shell function is bash too, so define it in Git Bash or WSL, or use
+  `docker compose run --rm blasphemy-killer …`.
 
 ### Other useful flags
 
@@ -154,7 +158,8 @@ its **contents**, never a path — an unauthenticated page that opened
 server-side paths would be a way to read any file on the host. What arrives is
 checked for being a real Netscape cookies.txt (a JSON export, the usual
 mistake, is refused with an explanation rather than failing three minutes into
-a download) and written to `cookies.txt` in the config directory, mode `600`.
+a download) and written to `cookies.txt` in the config directory, mode `600`
+(on Windows, file permissions come from the folder's ACL instead).
 
 The UI shows how many cookies are in place and can remove them again. It never
 sends them back to the browser. An uploaded file takes precedence over a
@@ -213,7 +218,7 @@ blasphemy-killer -r /media/videos
 # Download with yt-dlp, then clean the download
 blasphemy-killer https://youtube.com/watch?v=... -o clean-video.mp4
 
-# Keep the original as movie.mp4.bak
+# Keep the original as movie.mp4.bak (only when something was muted)
 blasphemy-killer --keep-backup movie.mp4
 
 # Audio files work too (mp3, m4a, flac, ogg, opus, wav)
@@ -224,7 +229,9 @@ Useful flags: `-m/--model` (whisper model, default `small`; try `medium` for
 mumbled dialogue), `--pad-ms` (mute padding around each phrase, default 300),
 `--force` (reprocess already-cleaned files), `--list-phrases`,
 `--no-report`, `-n/--dry-run`, `--cookies`, `--no-progress`, `-v/--verbose`
-(print each stage as it starts).
+(print each stage as it starts), `--language` (`auto` to detect), `--threads`,
+`--center-channel/--no-center-channel`, `--vad/--no-vad`, `--vad-threshold`,
+`-c/--config`. `blasphemy-killer --help` lists them all.
 
 ### Progress
 
@@ -288,13 +295,14 @@ started from the UI. Note that yt-dlp may rewrite the file
 with refreshed cookies after a download, and that the file grants access to
 your logged-in accounts — keep it out of version control (this repo's
 `.gitignore` and `.dockerignore` both exclude `cookies.txt`) and readable only
-by you (`chmod 600`).
+by you (`chmod 600`; on Windows, keep it in your user profile).
 
 ## Configuration
 
 Defaults ship with the package. Override any of them in
-`~/.config/blasphemy-killer/config.toml` — `/config/config.toml` inside the
-image — or in a file passed via `--config`:
+`~/.config/blasphemy-killer/config.toml` (on Windows
+`%USERPROFILE%\.config\blasphemy-killer\config.toml`) — `/config/config.toml`
+inside the image — or in a file passed via `--config`:
 
 ```toml
 [detection]
@@ -311,6 +319,11 @@ center_channel = true   # 5.1/7.1: transcribe the dialogue (center) channel, not
 vad_filter = true       # set false to transcribe everything, including speech under loud music
 vad_threshold = 0.35    # lower = keeps quieter speech (more recall, a bit more noise)
 ```
+
+The shipped defaults (`src/blasphemy_killer/data/default_config.toml`) also
+cover `beam_size`, `cpu_threads` (0 = auto) and a `[processing]` table:
+`extensions` (which files a directory scan picks up), `write_report` and
+`keep_backup`.
 
 Run `blasphemy-killer --list-phrases` to see the effective list. Matching is
 case- and space-insensitive ("g** d***" also catches the one-word and
@@ -367,11 +380,21 @@ blasphemy-killer --dry-run movie.mp4
 First run downloads the whisper model (~460 MB for `small`) to
 `~/.cache/huggingface`.
 
+On Windows (PowerShell): `.venv\Scripts\Activate.ps1`, then
+`blasphemy-killer --dry-run movie.mp4`. The config directory is
+`%USERPROFILE%\.config\blasphemy-killer` (same layout as Linux; `BK_CONFIG_DIR`
+overrides it), and the model cache is `%USERPROFILE%\.cache\huggingface`.
+
 The web UI works natively too:
 
 ```bash
 uv run blasphemy-killer-serve --media-root ~/Videos
 ```
+
+Natively, `--media-root` defaults to `/media`, so pass your library
+(`--media-root ~/Videos`, on Windows e.g. `--media-root D:\Videos`).
+`BK_MEDIA_ROOT`, `BK_WEB_HOST` and `BK_WEB_PORT` set the same defaults from
+the environment.
 
 ## Behavior notes
 
@@ -391,7 +414,9 @@ uv run blasphemy-killer-serve --media-root ~/Videos
   bitrate (lossless formats like FLAC and WAV stay lossless).
 - Safety: output is written to a temp file beside the original, checked
   (duration, stream counts, video codec), then atomically swapped in. On any
-  failure the original is untouched.
+  failure the original is untouched. On Windows, close the file in any player
+  first: a file that is open elsewhere cannot be replaced, and the clean fails
+  with the original untouched.
 - A `<file>.bk.json` sidecar records what was found and muted (`--no-report`
   to skip).
 
@@ -406,6 +431,16 @@ BK_E2E=1 scripts/e2e_speech.sh    # native
 BK_E2E=1 scripts/e2e_docker.sh    # containerized
 ```
 
-`scripts/e2e_docker.sh` builds on the image in `BK_IMAGE` (default
-`blasphemy-killer:2.5.2`) and additionally checks host file ownership,
-done-marker persistence across runs, and the web UI.
+`scripts/e2e_docker.sh` runs the image named in `BK_IMAGE` (default
+`blasphemy-killer:2.5.2`; build it first with
+`docker build -t blasphemy-killer:2.5.2 .`) and additionally checks host file
+ownership, done-marker persistence across runs, and the web UI. Both e2e
+scripts need `uvx` (for gTTS) and bash.
+
+CI (`.github/workflows/ci.yml`) runs `uv run pytest -q` on Ubuntu only;
+Windows is tested by hand. Pushing a `vX.Y.Z` tag builds and pushes the
+multi-arch image and publishes a GitHub release whose notes are the
+`## X.Y.Z` section of CHANGELOG.md (the tag fails if that section is missing
+or empty), so rename `## Unreleased` before tagging, and bump
+`docker-compose.yml`, `scripts/e2e_docker.sh` and the README's `BK_IMAGE`
+default with the version.
